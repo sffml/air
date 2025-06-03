@@ -1,0 +1,213 @@
+version: '3.8'
+
+services:
+  # --- API Gateway (Nginx) ---
+  api-gateway:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./ssl:/etc/nginx/ssl
+    depends_on:
+      - auth-service
+      - booking-service
+      - flight-service
+      - search-service
+    networks:
+      - app-network
+
+  # --- Auth Service (JWT + PostgreSQL) ---
+  auth-service:
+    build: ./auth-service
+    environment:
+      DATABASE_URL: "postgresql://postgres:password@postgres:5432/auth_db"
+      JWT_SECRET: "your_jwt_secret"
+    ports:
+      - "5000:5000"
+    depends_on:
+      - postgres
+    networks:
+      - app-network
+
+  # --- Booking Service (Camunda BPMN) ---
+  booking-service:
+    build: ./booking-service
+    environment:
+      CAMUNDA_URL: "http://camunda:8080"
+      FLIGHT_SERVICE_URL: "http://flight-service:3000"
+      PAYMENT_SERVICE_URL: "http://payment-service:4000"
+    ports:
+      - "3001:3000"
+    depends_on:
+      - camunda
+      - flight-service
+    networks:
+      - app-network
+
+  # --- Flight Service (MongoDB) ---
+  flight-service:
+    build: ./flight-service
+    environment:
+      MONGO_URI: "mongodb://mongo:27017/flight_db"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mongo
+    networks:
+      - app-network
+
+  # --- Search Service (Elasticsearch) ---
+  search-service:
+    build: ./search-service
+    environment:
+      ELASTICSEARCH_URL: "http://elasticsearch:9200"
+    ports:
+      - "3002:3000"
+    depends_on:
+      - elasticsearch
+    networks:
+      - app-network
+
+  # --- Payment Service ---
+  payment-service:
+    build: ./payment-service
+    environment:
+      STRIPE_KEY: "your_stripe_key"
+      KAFKA_URL: "kafka:9092"
+    ports:
+      - "4000:4000"
+    depends_on:
+      - kafka
+    networks:
+      - app-network
+
+  # --- Notification Service (RabbitMQ) ---
+  notification-service:
+    build: ./notification-service
+    environment:
+      RABBITMQ_URL: "amqp://rabbitmq"
+    ports:
+      - "5001:5000"
+    depends_on:
+      - rabbitmq
+    networks:
+      - app-network
+
+  # --- Analytics Service (Kafka) ---
+  analytics-service:
+    build: ./analytics-service
+    environment:
+      KAFKA_URL: "kafka:9092"
+      ELASTICSEARCH_URL: "http://elasticsearch:9200"
+    depends_on:
+      - kafka
+      - elasticsearch
+    networks:
+      - app-network
+
+  # --- Databases & Message Brokers ---
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: "password"
+      POSTGRES_DB: "auth_db"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+
+  mongo:
+    image: mongo:6
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - app-network
+
+  elasticsearch:
+    image: elasticsearch:8.12
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - app-network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - app-network
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    networks:
+      - app-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    ports:
+      - "9092:9092"
+    networks:
+      - app-network
+
+  camunda:
+    image: camunda/camunda-bpm-platform:latest
+    ports:
+      - "8080:8080"
+    environment:
+      DB_URL: "jdbc:postgresql://postgres:5432/camunda_db"
+      DB_USERNAME: "postgres"
+      DB_PASSWORD: "password"
+    depends_on:
+      - postgres
+    networks:
+      - app-network
+
+  # --- Monitoring (Prometheus + Grafana) ---
+  prometheus:
+    image: prom/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - app-network
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - app-network
+
+volumes:
+  postgres_data:
+  mongo_data:
+  es_data:
+  rabbitmq_data:
+
+networks:
+  app-network:
+    driver: bridge
